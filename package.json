@@ -1,12 +1,16 @@
 {
   "name": "plantcare-ai",
   "version": "1.0.0",
-  "description": "PlantCare AI - AI urban farming assistant (Express + SQLite + Claude vision)",
+  "description": "PlantCare AI - AI urban farming assistant (Express + SQLite + Gemini)",
   "main": "server.js",
-  "scripts": { "start": "node server.js", "dev": "node --env-file=.env server.js" },
-  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file=.env server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
-    "@anthropic-ai/sdk": "latest",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.3.0",
     "cookie-parser": "^1.4.6",

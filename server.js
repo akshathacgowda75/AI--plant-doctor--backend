@@ -2,20 +2,45 @@ const express = require('express'), cookie = require('cookie-parser'), bcrypt = 
 const jwt = require('jsonwebtoken'), Database = require('better-sqlite3'), path = require('path');
 
 const PROD = process.env.NODE_ENV === 'production';
-const SECRET = process.env.JWT_SECRET || (PROD ? (() => { throw new Error('Set JWT_SECRET'); })() : 'dev-secret');
+
+const SECRET = process.env.JWT_SECRET || (
+  PROD
+    ? (() => { throw new Error('Set JWT_SECRET'); })()
+    : 'dev-secret'
+);
 
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
 
 const db = new Database(process.env.DB_PATH || 'plantcare.db');
+
 db.pragma('journal_mode = WAL');
+
 db.exec(`
-CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, created INTEGER);
-CREATE TABLE IF NOT EXISTS gardens(user_id INTEGER PRIMARY KEY REFERENCES users(id), data TEXT NOT NULL, ts INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), plant_type TEXT, result TEXT, created INTEGER);
+CREATE TABLE IF NOT EXISTS users(
+  id INTEGER PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  hash TEXT NOT NULL,
+  created INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS gardens(
+  user_id INTEGER PRIMARY KEY REFERENCES users(id),
+  data TEXT NOT NULL,
+  ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scans(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  plant_type TEXT,
+  result TEXT,
+  created INTEGER
+);
 `);
 
 const app = express();
+
 app.set('trust proxy', 1);
 
 const ORIGINS = (process.env.ALLOWED_ORIGIN || '')
@@ -35,7 +60,9 @@ app.use((req, res, next) => {
     });
   }
 
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
 
   next();
 });
@@ -46,16 +73,23 @@ const hits = new Map();
 
 const limit = (key, max, ms) => {
   const n = Date.now();
-  const a = (hits.get(key) || []).filter(t => n - t < ms);
+
+  const a = (hits.get(key) || [])
+    .filter(t => n - t < ms);
 
   a.push(n);
+
   hits.set(key, a);
 
   return a.length <= max;
 };
 
 const setCookie = (res, id) => {
-  const t = jwt.sign({ id }, SECRET, { expiresIn: '30d' });
+  const t = jwt.sign(
+    { id },
+    SECRET,
+    { expiresIn: '30d' }
+  );
 
   res.cookie('t', t, {
     httpOnly: true,
@@ -76,14 +110,19 @@ const auth = (req, res, next) => {
     ).id;
 
     next();
+
   } catch {
-    res.status(401).json({ error: 'unauthorized' });
+    res.status(401).json({
+      error: 'unauthorized'
+    });
   }
 };
+
 
 // ---------- Gemini AI helper ----------
 
 async function geminiGenerate(contents, config = {}) {
+
   if (!GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY is not configured');
   }
@@ -91,22 +130,42 @@ async function geminiGenerate(contents, config = {}) {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
 
+  const {
+    systemInstruction,
+    ...generationConfig
+  } = config;
+
   const response = await fetch(url, {
     method: 'POST',
+
     headers: {
       'Content-Type': 'application/json'
     },
+
     body: JSON.stringify({
       contents,
-      generationConfig: config
+
+      ...(systemInstruction
+        ? { systemInstruction }
+        : {}),
+
+      generationConfig
     })
   });
 
   const data = await response.json();
 
   if (!response.ok) {
-    console.error('Gemini API error:', JSON.stringify(data));
-    throw new Error(data?.error?.message || 'Gemini API request failed');
+
+    console.error(
+      'Gemini API error:',
+      JSON.stringify(data)
+    );
+
+    throw new Error(
+      data?.error?.message ||
+      'Gemini API request failed'
+    );
   }
 
   return data?.candidates?.[0]?.content?.parts
@@ -114,49 +173,93 @@ async function geminiGenerate(contents, config = {}) {
     .join('') || '';
 }
 
+
 // ---------- auth ----------
 
 app.post('/api/register', (req, res) => {
-  const e = String(req.body.email || '').trim().toLowerCase();
-  const p = String(req.body.password || '');
 
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) || p.length < 8) {
+  const e = String(
+    req.body.email || ''
+  )
+    .trim()
+    .toLowerCase();
+
+  const p = String(
+    req.body.password || ''
+  );
+
+  if (
+    !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e) ||
+    p.length < 8
+  ) {
     return res.status(400).json({
       error: 'Enter a valid email and a password of 8+ characters'
     });
   }
 
   try {
+
     const r = db
-      .prepare('INSERT INTO users(email,hash,created) VALUES(?,?,?)')
-      .run(e, bcrypt.hashSync(p, 10), Date.now());
+      .prepare(
+        'INSERT INTO users(email,hash,created) VALUES(?,?,?)'
+      )
+      .run(
+        e,
+        bcrypt.hashSync(p, 10),
+        Date.now()
+      );
 
     res.json({
       email: e,
       ai: !!GEMINI_API_KEY,
-      token: setCookie(res, r.lastInsertRowid)
+      token: setCookie(
+        res,
+        r.lastInsertRowid
+      )
     });
+
   } catch {
+
     res.status(409).json({
       error: 'Email already registered'
     });
   }
 });
 
+
 app.post('/api/login', (req, res) => {
-  if (!limit('l' + req.ip, 10, 15 * 60e3)) {
+
+  if (
+    !limit(
+      'l' + req.ip,
+      10,
+      15 * 60e3
+    )
+  ) {
     return res.status(429).json({
       error: 'Too many attempts, try again later'
     });
   }
 
-  const e = String(req.body.email || '').trim().toLowerCase();
+  const e = String(
+    req.body.email || ''
+  )
+    .trim()
+    .toLowerCase();
 
   const u = db
-    .prepare('SELECT * FROM users WHERE email=?')
+    .prepare(
+      'SELECT * FROM users WHERE email=?'
+    )
     .get(e);
 
-  if (!u || !bcrypt.compareSync(String(req.body.password || ''), u.hash)) {
+  if (
+    !u ||
+    !bcrypt.compareSync(
+      String(req.body.password || ''),
+      u.hash
+    )
+  ) {
     return res.status(401).json({
       error: 'Wrong email or password'
     });
@@ -165,17 +268,30 @@ app.post('/api/login', (req, res) => {
   res.json({
     email: u.email,
     ai: !!GEMINI_API_KEY,
-    token: setCookie(res, u.id)
+    token: setCookie(
+      res,
+      u.id
+    )
   });
 });
 
-app.post('/api/logout', (req, res) =>
-  res.clearCookie('t').json({ ok: true })
-);
+
+app.post('/api/logout', (req, res) => {
+
+  res
+    .clearCookie('t')
+    .json({
+      ok: true
+    });
+});
+
 
 app.get('/api/me', auth, (req, res) => {
+
   const u = db
-    .prepare('SELECT email FROM users WHERE id=?')
+    .prepare(
+      'SELECT email FROM users WHERE id=?'
+    )
     .get(req.uid);
 
   u
@@ -188,11 +304,15 @@ app.get('/api/me', auth, (req, res) => {
       });
 });
 
+
 // ---------- garden ----------
 
 app.get('/api/garden', auth, (req, res) => {
+
   const g = db
-    .prepare('SELECT data,ts FROM gardens WHERE user_id=?')
+    .prepare(
+      'SELECT data,ts FROM gardens WHERE user_id=?'
+    )
     .get(req.uid);
 
   res.json(
@@ -208,10 +328,16 @@ app.get('/api/garden', auth, (req, res) => {
   );
 });
 
+
 app.put('/api/garden', auth, (req, res) => {
+
   const d = req.body.data;
 
-  if (!d || !Array.isArray(d.plants) || d.plants.length > 200) {
+  if (
+    !d ||
+    !Array.isArray(d.plants) ||
+    d.plants.length > 200
+  ) {
     return res.status(400).json({
       error: 'bad data'
     });
@@ -222,16 +348,22 @@ app.put('/api/garden', auth, (req, res) => {
   db.prepare(`
     INSERT INTO gardens(user_id,data,ts)
     VALUES(?,?,?)
+
     ON CONFLICT(user_id)
-    DO UPDATE SET data=excluded.data, ts=excluded.ts
+    DO UPDATE SET
+      data=excluded.data,
+      ts=excluded.ts
   `).run(
     req.uid,
     JSON.stringify(d),
     ts
   );
 
-  res.json({ ts });
+  res.json({
+    ts
+  });
 });
+
 
 // ---------- AI image diagnosis ----------
 
@@ -271,64 +403,99 @@ Rules:
 - "water" must be one short watering note.
 - If unsure, keep confidence below 60.`;
 
-// Convert the AI response into clean JSON
+
+// Convert AI response into clean JSON
+
 function extractJson(text) {
+
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
 
-  if (start === -1 || end === -1) {
-    throw new Error('Gemini did not return JSON');
+  if (
+    start === -1 ||
+    end === -1
+  ) {
+    throw new Error(
+      'Gemini did not return JSON'
+    );
   }
 
-  return JSON.parse(text.slice(start, end + 1));
+  return JSON.parse(
+    text.slice(
+      start,
+      end + 1
+    )
+  );
 }
 
+
 app.post('/api/analyze', auth, async (req, res) => {
+
   if (!GEMINI_API_KEY) {
     return res.status(503).json({
       error: 'unavailable'
     });
   }
 
-  if (!limit('a' + req.uid, 40, 36e5)) {
+  if (
+    !limit(
+      'a' + req.uid,
+      40,
+      36e5
+    )
+  ) {
     return res.status(429).json({
       error: 'rate_limited'
     });
   }
 
-  const { image, plantType } = req.body;
+  const {
+    image,
+    plantType
+  } = req.body;
 
-  if (typeof image !== 'string' || image.length > 7e6) {
+  if (
+    typeof image !== 'string' ||
+    image.length > 7e6
+  ) {
     return res.status(400).json({
       error: 'bad_image'
     });
   }
 
-  const type = String(plantType || 'unknown').slice(0, 40);
+  const type = String(
+    plantType || 'unknown'
+  ).slice(0, 40);
 
   try {
+
     const prompt = PROMPT(type);
 
-    const text = await geminiGenerate([
-      {
-        role: 'user',
-        parts: [
-          {
-            inlineData: {
-              mimeType: 'image/jpeg',
-              data: image
+    const text = await geminiGenerate(
+      [
+        {
+          role: 'user',
+
+          parts: [
+            {
+              inlineData: {
+                mimeType: 'image/jpeg',
+                data: image
+              }
+            },
+
+            {
+              text: prompt
             }
-          },
-          {
-            text: prompt
-          }
-        ]
+          ]
+        }
+      ],
+      {
+        temperature: 0.2,
+        maxOutputTokens: 1000,
+        responseMimeType: 'application/json'
       }
-    ], {
-      temperature: 0.2,
-      maxOutputTokens: 1000,
-      responseMimeType: 'application/json'
-    });
+    );
 
     const r = extractJson(text);
 
@@ -336,11 +503,20 @@ app.post('/api/analyze', auth, async (req, res) => {
       0,
       Math.min(
         100,
-        Math.round(Number(r.conf) || 0)
+        Math.round(
+          Number(r.conf) || 0
+        )
       )
     );
 
-    if (!['none', 'mild', 'moderate', 'severe'].includes(r.sev)) {
+    if (
+      ![
+        'none',
+        'mild',
+        'moderate',
+        'severe'
+      ].includes(r.sev)
+    ) {
       r.sev = 'none';
     }
 
@@ -353,7 +529,12 @@ app.post('/api/analyze', auth, async (req, res) => {
       .map(String);
 
     db.prepare(`
-      INSERT INTO scans(user_id,plant_type,result,created)
+      INSERT INTO scans(
+        user_id,
+        plant_type,
+        result,
+        created
+      )
       VALUES(?,?,?,?)
     `).run(
       req.uid,
@@ -365,7 +546,11 @@ app.post('/api/analyze', auth, async (req, res) => {
     res.json(r);
 
   } catch (e) {
-    console.error('analyze:', e.message);
+
+    console.error(
+      'analyze:',
+      e.message
+    );
 
     res.status(502).json({
       error: 'ai_error'
@@ -373,33 +558,48 @@ app.post('/api/analyze', auth, async (req, res) => {
   }
 });
 
+
 app.get('/api/scans', auth, (req, res) => {
+
   res.json(
-    db.prepare(`
-      SELECT id,plant_type,result,created
-      FROM scans
-      WHERE user_id=?
-      ORDER BY id DESC
-      LIMIT 50
-    `)
-    .all(req.uid)
-    .map(s => ({
-      ...s,
-      result: JSON.parse(s.result)
-    }))
+    db
+      .prepare(`
+        SELECT
+          id,
+          plant_type,
+          result,
+          created
+        FROM scans
+        WHERE user_id=?
+        ORDER BY id DESC
+        LIMIT 50
+      `)
+      .all(req.uid)
+      .map(s => ({
+        ...s,
+        result: JSON.parse(s.result)
+      }))
   );
 });
+
 
 // ---------- AI plant assistant ----------
 
 app.post('/api/chat', auth, async (req, res) => {
+
   if (!GEMINI_API_KEY) {
     return res.status(503).json({
       error: 'unavailable'
     });
   }
 
-  if (!limit('c' + req.uid, 120, 36e5)) {
+  if (
+    !limit(
+      'c' + req.uid,
+      120,
+      36e5
+    )
+  ) {
     return res.status(429).json({
       error: 'rate_limited'
     });
@@ -418,7 +618,11 @@ app.post('/api/chat', auth, async (req, res) => {
         m.content
     )
     .map(m => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
+      role:
+        m.role === 'assistant'
+          ? 'model'
+          : 'user',
+
       parts: [
         {
           text: m.content.slice(0, 4000)
@@ -437,24 +641,34 @@ app.post('/api/chat', auth, async (req, res) => {
   }
 
   try {
-    const text = await geminiGenerate(msgs, {
-      temperature: 0.4,
-      maxOutputTokens: 600,
-      systemInstruction: {
-        parts: [
-          {
-            text: 'You are the PlantCare AI assistant for urban gardeners. Answer using the garden data in the conversation. Be concise, practical and organic-first. Say when you are unsure and advise consulting a local agricultural expert for severe or unclear problems.'
-          }
-        ]
+
+    const text = await geminiGenerate(
+      msgs,
+      {
+        temperature: 0.4,
+        maxOutputTokens: 600,
+
+        systemInstruction: {
+          parts: [
+            {
+              text:
+                'You are the PlantCare AI assistant for urban gardeners. Answer using the garden data in the conversation. Be concise, practical and organic-first. Say when you are unsure and advise consulting a local agricultural expert for severe or unclear problems.'
+            }
+          ]
+        }
       }
-    });
+    );
 
     res.json({
       text
     });
 
   } catch (e) {
-    console.error('chat:', e.message);
+
+    console.error(
+      'chat:',
+      e.message
+    );
 
     res.status(502).json({
       error: 'ai_error'
@@ -462,18 +676,33 @@ app.post('/api/chat', auth, async (req, res) => {
   }
 });
 
+
 // ---------- frontend ----------
 
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(
+  express.static(
+    path.join(__dirname, 'public')
+  )
+);
 
-const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(
-    'PlantCare AI running on port ' +
-    PORT +
-    (GEMINI_API_KEY
-      ? ' (Gemini AI enabled)'
-      : ' (no GEMINI_API_KEY: AI disabled)')
-  );
-});
+const PORT =
+  process.env.PORT || 3000;
+
+
+app.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+
+    console.log(
+      'PlantCare AI running on port ' +
+      PORT +
+      (
+        GEMINI_API_KEY
+          ? ' (Gemini AI enabled)'
+          : ' (no GEMINI_API_KEY: AI disabled)'
+      )
+    );
+  }
+);
